@@ -1,0 +1,61 @@
+name: Goi y chu de / Viet bai
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Viec can lam"
+        type: choice
+        options: ["suggest", "write"]
+        default: "suggest"
+      input:
+        description: "suggest: huong uu tien (co the trong). write: so ID y tuong, chu de, hoac link YouTube"
+        required: false
+        type: string
+
+concurrency:
+  group: manual
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python manual_run.py
+        env:
+          ACTION: ${{ inputs.action || 'suggest' }}
+          INPUT: ${{ inputs.input }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ALLOWED_CHAT_IDS: ${{ secrets.TELEGRAM_ALLOWED_CHAT_IDS }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          IMAGE_MODE: ${{ vars.IMAGE_MODE }}
+          BRAND_NAME: ${{ vars.BRAND_NAME }}
+          BRAND_HANDLE: ${{ vars.BRAND_HANDLE }}
+          CARD_TAG: ${{ vars.CARD_TAG }}
+          TILE_WATERMARK: ${{ vars.TILE_WATERMARK }}
+          GEMINI_TEXT_MODEL: ${{ vars.GEMINI_TEXT_MODEL }}
+          GEMINI_IMAGE_MODEL: ${{ vars.GEMINI_IMAGE_MODEL }}
+          IDEAS_USE_SEARCH: ${{ vars.IDEAS_USE_SEARCH }}
+      - name: Luu anh nhap vao repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p drafts && git add drafts
+          git diff --cached --quiet && exit 0
+          git commit -m "Anh nhap moi"
+          git pull --rebase && git push
