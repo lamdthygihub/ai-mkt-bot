@@ -9,30 +9,58 @@ import requests
 API = "https://generativelanguage.googleapis.com/v1beta/models"
 TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL") or "gemini-flash-latest"
 IMAGE_MODEL = os.environ.get("GEMINI_IMAGE_MODEL") or "gemini-3.1-flash-lite-image"
+# Model dự phòng khi model chính quá tải / hết lượt (cách nhau dấu phẩy)
+FALLBACK_MODELS = [m.strip() for m in (os.environ.get("GEMINI_FALLBACK_MODELS")
+                   or "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",") if m.strip()]
 
 
 class GeminiError(Exception):
     pass
 
 
-def _generate(model, body):
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise GeminiError("Thiếu secret GEMINI_API_KEY")
-    for attempt in range(4):
+class _Busy(GeminiError):
+    pass
+
+
+def _call(model, body, key):
+    for attempt in range(3):
         r = requests.post(f"{API}/{model}:generateContent", json=body,
                           headers={"x-goog-api-key": key}, timeout=180)
-        if r.status_code in (429, 500, 503) and attempt < 3:
-            time.sleep(10 * (attempt + 1))  # quá tải / hết lượt miễn phí tạm thời
-            continue
+        if r.status_code in (429, 500, 503):
+            if attempt < 2:
+                time.sleep(15 * (attempt + 1))  # quá tải / hết lượt tạm thời
+                continue
+            raise _Busy(f"{model}: quá tải ({r.status_code})")
         data = r.json()
         if "error" in data:
-            raise GeminiError(f"{model}: {data['error'].get('message')}")
+            msg = data["error"].get("message", "")
+            if r.status_code == 404 or "not found" in msg.lower():
+                raise _Busy(f"{model}: không tồn tại")  # đổi tên model -> thử model khác
+            raise GeminiError(f"{model}: {msg}")
         cands = data.get("candidates") or []
         if not cands:
             raise GeminiError(f"{model}: không có kết quả ({data.get('promptFeedback')})")
         return cands[0].get("content", {}).get("parts", [])
-    raise GeminiError(f"{model}: quá tải, thử lại sau")
+    raise _Busy(f"{model}: quá tải")
+
+
+def _generate(model, body, fallback=True):
+    """Gọi model; nếu quá tải thì lần lượt thử các model dự phòng."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise GeminiError("Thiếu secret GEMINI_API_KEY")
+    models = [model] + ([m for m in FALLBACK_MODELS if m != model] if fallback else [])
+    errors = []
+    for m in models:
+        try:
+            parts = _call(m, body, key)
+            if m != model:
+                print(f"Dùng model dự phòng: {m}")
+            return parts
+        except _Busy as e:
+            print(e)
+            errors.append(str(e))
+    raise GeminiError("Tất cả model đang quá tải, thử lại sau ít phút. " + " | ".join(errors))
 
 
 def write_post(instructions, source_info):
@@ -62,7 +90,7 @@ def write_post(instructions, source_info):
 
 def make_image(prompt, aspect_ratio="4:5"):
     """Trả về bytes ảnh. Cần bật thanh toán (billing) cho API key."""
-    parts = _generate(IMAGE_MODEL, {
+    parts = _generate(IMAGE_MODEL, fallback=False, body={
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"],
                              "imageConfig": {"aspectRatio": aspect_ratio}},
